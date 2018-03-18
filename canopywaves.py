@@ -471,72 +471,8 @@ class CanopyWaveCase:
             self.products['wave_parameters'] = waves, mean_wave
         return self.products['wave_parameters']
 
-    def crest_locations(self, correl_threshold=0.1):
-        """Attempt to locate wave crests.
-
-        DEPRECATED!
-
-        :param correl_threshold:
-        :return: crests, patterns, correl_fields
-            crests: a list of binary images (1 where potential crest point), one for
-                each scan of the case.
-            patterns: a list of wave pattern, one for each scan.
-            correl_fields: a list of correlation fields, one for eachs can. These fields
-                are the correlation between the scan and its synthetic wave pattern.
-
-        Written by P. DERIAN 2018-02-12.
-        """
-        if 'crest_locations' not in self.products:
-            print('* (Case #{:02d}) Locating crests'.format(self.case_id))
-            ### Detect wave parameters
-            waves, mean_wave = self.wave_parameters()
-            wavelengths_fixed, directions_fixed, _ = self.fix_wave_outliers(waves, mean_wave)
-            ### hard target mask
-            hard_target_mask = self.hard_target_mask()
-            # dilate the hard-target mask to minimize artifacts
-            dilation_kernel = morphology.disk(3, dtype=bool)
-            dilated_hard_target_mask = morphology.binary_dilation(hard_target_mask,
-                                                                  dilation_kernel)
-            ### scans
-            crests = []
-            patterns = []
-            correl_fields = []
-            resolution = self.param_grid['resolution']
-            for (scan_info, scan_data, scan_valid, grid_scan, grid_mask,
-                 wavelength, propagation_direction) in zip(self.scan_info, self.scan_data,
-                                                           self.scan_valid, self.grid_scans,
-                                                           self.grid_masks, wavelengths_fixed,
-                                                           directions_fixed):
-                ### synthetic wave pattern
-                n = numpy.int(numpy.ceil(wavelength/resolution))
-                if not n%2: #make sure its dimension is odd
-                    n += 1
-                x = resolution*(numpy.arange(n) - float(n//2))
-                x, y = numpy.meshgrid(x, x)
-                theta = numpy.deg2rad(propagation_direction)
-                wave_pattern = numpy.cos( (x*numpy.sin(theta) + y*numpy.cos(theta))*(2.*numpy.pi/wavelength) )
-                ### scan
-                # compute full mask, apply
-                full_scan_mask = numpy.logical_or(grid_mask, hard_target_mask)
-                full_scan_window = numpy.logical_not(full_scan_mask).astype(float)
-                ### correlate (in spatial domain)
-                correl = ndimage.correlate(grid_scan*full_scan_window, wave_pattern,
-                                           mode='constant', cval=0.)
-                correl *= 2./float(wave_pattern.size) #normalize
-                ### find crests
-                # by skeletonization
-                full_crest_mask = numpy.logical_or(grid_mask, dilated_hard_target_mask)
-                is_crest = numpy.logical_and(morphology.skeletonize_3d(correl>correl_threshold),
-                                             numpy.logical_not(full_crest_mask))
-                # append
-                crests.append(is_crest)
-                patterns.append(wave_pattern)
-                correl_fields.append(correl)
-            self.products['crest_locations'] = crests, patterns, correl_fields
-        return self.products['crest_locations']
-
-    def crest_locations2(self, correl_threshold=0.2, area_threshold=6, max_angle_diff=20.,
-                         asym_threshold=1.05):
+    def crest_locations(self, correl_threshold=0.2, area_threshold=6, max_angle_diff=20.,
+                        asym_threshold=1.05):
         """Attempt to locate wave crests.
 
         :param correl_threshold: min correlation value for crest detection;
@@ -548,7 +484,7 @@ class CanopyWaveCase:
         Written by P. DERIAN 2018-02-21.
         """
         if 'crest_locations' not in self.products:
-            print('* (Case #{:02d}) Locating crests v2'.format(self.case_id))
+            print('* (Case #{:02d}) Locating crests'.format(self.case_id))
             ### Detect wave parameters
             waves, mean_wave = self.wave_parameters()
             wavelengths_fixed, directions_fixed, _ = self.fix_wave_outliers(waves, mean_wave)
@@ -867,7 +803,6 @@ class CanopyWaveCase:
         """
         return numpy.cos((2.*numpy.pi/w)*x)
 
-
 ### MAIN FUNCTIONS ###
 
 if __name__=="__main__":
@@ -1019,8 +954,8 @@ if __name__=="__main__":
         autocorrelations, (xlag, ylag) = case.autocorrelations()
         waves, mean_wave = case.wave_parameters() #Note: last one is the mean
         mean_autocorrelation = numpy.asarray(autocorrelations).mean(axis=0)
-        for k, (wave, autocorrelation) in enumerate(zip(waves,#+[mean_wave,],
-                                                        autocorrelations)):#+[mean_autocorrelation,])):
+        for k, (wave, autocorrelation) in enumerate(zip(waves+[mean_wave,],
+                                                        autocorrelations+[mean_autocorrelation,])):
             if wave is None:
                 continue
             wavelength = wave['wavelength'] if (wave is not None) else None
@@ -1162,90 +1097,12 @@ if __name__=="__main__":
         Written by P. DERIAN 2018-02-08.
         """
         ### output directory for crests
-        output_dir = os.path.join(root_dir, 'crests', 'case_{:02d}'.format(case.case_id))
-        if not os.path.isdir(output_dir):
-            os.makedirs(output_dir, mode=0o755)
-            print('Created output directory: {}'.format(output_dir))
-        ### Locate crests
-        case_crests, case_patterns, case_correl_fields = case.crest_locations()
-        ### scans
-        hard_target_mask = case.hard_target_mask()
-        for (scan_info, scan_data, scan_valid, grid_scan, grid_mask,
-             crest, pattern, correl_field) in zip(case.scan_info, case.scan_data,
-                                                  case.scan_valid, case.grid_scans,
-                                                  case.grid_masks, case_crests,
-                                                  case_patterns, case_correl_fields):
-            full_mask = numpy.logical_or(grid_mask, hard_target_mask)
-            not_crest = numpy.logical_not(crest)
-            ### plot
-            dpi = 72
-            fig, axes = pyplot.subplots(1,2,
-                                        gridspec_kw={'left':0.09, 'right':0.97, 'wspace':0.25},
-                                        figsize=(768./dpi, 480./dpi))
-            # scan
-            ax = axes[0]
-            ax.set_title('Gridded scan, wave pattern, crests')
-            p1 = ax.imshow(numpy.ma.array(grid_scan, mask=full_mask), interpolation='nearest',
-                           vmin=-1., vmax=3., cmap='nipy_spectral',
-                           origin='bottom', extent=[case.x[0], case.x[-1], case.y[0], case.y[-1]],
-                           zorder=1)
-            # crests?
-            p3 = ax.imshow(numpy.ma.array(crest, mask=not_crest), interpolation='nearest',
-                           vmin=0., vmax=1., cmap='gray_r',
-                           origin='bottom', extent=[case.x[0], case.x[-1], case.y[0], case.y[-1]],
-                           zorder=3)
-            # synthetic wave in the bottom-left corner
-            pxdim = case.param_grid['resolution']*pattern.shape[1]
-            pydim = case.param_grid['resolution']*pattern.shape[0]
-            xmin = case.x[0] + 5.
-            xmax = case.x[0] + 5. + pxdim
-            ymin = case.y[0] + 5.
-            ymax = case.y[0] + 5. + pydim
-            ax.add_artist(patches.Rectangle((xmin-5., ymin-5.), pxdim+10., pydim+10.,
-                                            ec='none', fc='w', zorder=2)) #white background
-            p2 = ax.imshow(pattern, interpolation='nearest',
-                           vmin=-1., vmax=3., cmap='nipy_spectral',
-                           origin='bottom', extent=[xmin, xmax, ymin, ymax],
-                           zorder=3) #patch
-            ax.add_artist(patches.Rectangle((xmin, ymin), pxdim, pydim,
-                                            ec='k', fc='none', lw=1., zorder=4)) #black line
-            # correlation
-            ax = axes[1]
-            ax.set_title('Correlation (scan, wave pattern)')
-            p = ax.imshow(numpy.ma.array(correl_field, mask=grid_mask), interpolation='nearest',
-                          vmin = -1., vmax=1., cmap='RdYlBu_r',
-                          origin='bottom', extent=[case.x[0], case.x[-1], case.y[0], case.y[-1]])
-            # style
-            scan_str = 'Canopy wave case #{:02d} - {:%Y %b %d - %H:%M:%S} UTC'.format(
-                case.case_id, scan_data['time'][0])
-            pyplot.figtext(0.5, 0.98, '{}'.format(scan_str),
-                           ha='center', va='top', size='large')
-            for ax in axes:
-                ax.set_xlim(xmin=case.x[0], xmax=case.x[-1])
-                ax.set_ylim(ymin=case.y[0], ymax=case.y[-1])
-                ax.set_xlabel('x (m)')
-                ax.set_ylabel('y (m)')
-            basename, _ = os.path.splitext(os.path.basename(scan_info['path']))
-            output_file = os.path.join(output_dir, 'crests_{}.png'.format(basename))
-            fig.savefig(output_file, format='png', dpi=dpi)
-            print('saved {}'.format(output_file))
-            pyplot.close(fig)
-
-    def plot_case_crests2(case, root_dir=OUTPUT_ROOT):
-        """Plot potential crests.
-
-        :param case: a CanopyWaveCase instance;
-        :param root_dir: root directory for plots;
-
-        Written by P. DERIAN 2018-02-08.
-        """
-        ### output directory for crests
         output_dir = os.path.join(root_dir, 'crests2', 'case_{:02d}'.format(case.case_id))
         if not os.path.isdir(output_dir):
             os.makedirs(output_dir, mode=0o755)
             print('Created output directory: {}'.format(output_dir))
         ### Locate crests
-        case_crests = case.crest_locations2()
+        case_crests = case.crest_locations()
         ### scans
         hard_target_mask = case.hard_target_mask()
         for (scan_info, scan_data, scan_valid, grid_scan, grid_mask,
@@ -1422,381 +1279,6 @@ if __name__=="__main__":
 
     ### MISC TESTS - DEPRECATED STUFF ###
 
-    def test_hard_target_mask(case):
-        """
-        Written by P. DERIAN 2018-02-02.
-        """
-
-        grid_scans = numpy.asarray(case.grid_scans)
-        not_valid = numpy.asarray(case.grid_masks)[case.valid_scans].sum(axis=0).astype(bool)
-        max_scan = grid_scans.max(axis=0)
-        mean_scan = grid_scans.mean(axis=0)
-
-        ### [WIP] display
-        if 1:
-            fig, axes = pyplot.subplots(2,2)
-            for n, (var, label) in enumerate(zip([mean_scan, max_scan], ['mean', 'max'])):
-                axes[0,n].imshow(numpy.ma.array(var, mask=not_valid), interpolation='nearest',
-                                 vmin=-1., vmax=3., cmap='nipy_spectral',
-                                 origin='bottom', extent=[case.x[0], case.x[-1], case.y[0], case.y[-1]],
-                )
-                axes[0,n].set_title(label)
-                axes[1,n].imshow(numpy.ma.array(var>5., mask=not_valid), interpolation='nearest',
-                                 vmin=0, vmax=1, cmap='gray',
-                                 origin='bottom', extent=[case.x[0], case.x[-1], case.y[0], case.y[-1]],
-                )
-            for ax in axes.ravel():
-                ax.set_facecolor('.8')
-                ax.set_xticklabels([])
-                ax.set_yticklabels([])
-            fig.savefig('../tmp/mean_{:02d}.png'.format(case.case_id))
-            pyplot.close(fig)
-
-    def test_wave_parameters_spatial(case, max_wavelength=120.):
-        """
-        Written by P. DERIAN 2018-02-05.
-        """
-        ### the mask
-        hard_target_mask = case.hard_target_mask()
-        ### the displacements
-        resolution = case.param_grid['resolution']
-        ny, nx = case.grid_shape
-        sx = resolution*nx//2
-        sy = resolution*ny//2
-        shiftx = numpy.linspace(-sx, sx, nx)
-        shifty = numpy.linspace(-sy, sy, ny)
-        shiftx, shifty = numpy.meshgrid(shiftx, shifty)
-        # range indices and isotropic spectrum
-        ranges = numpy.sqrt(shiftx**2 + shifty**2)
-        rbins, dr = numpy.linspace(0, 120, num=61, retstep=True)
-        rvalues = 0.5*(rbins[1:] + rbins[:-1])
-        rindices = numpy.digitize(ranges, rbins)
-        iso_spectrum = numpy.zeros(rbins.size-1)
-        iso_count = numpy.zeros_like(iso_spectrum)
-        # angle indices and directional spectrum
-        angles = numpy.rad2deg(numpy.arctan2(shiftx, shifty)) #meteo convention (0=North)
-        directions = angles
-        directions[directions<0] += 180.
-        directions = directions%360.
-        dbins, dd = numpy.linspace(2.5, 177.5, num=36, retstep=True)
-        dvalues = 0.5*(dbins[1:] + dbins[:-1])
-        dindices = numpy.digitize(directions, dbins)
-        dir_spectrum = numpy.zeros(dbins.size-1)
-        dir_count = numpy.zeros_like(dir_spectrum)
-        ### the autocorrelation
-        # taper window
-        window = numpy.outer(signal.hann(ny), signal.hann(nx))
-        # now for each scan
-        res = 0.
-        for idx_scan, (scan, mask) in enumerate(zip(case.grid_scans, case.grid_masks)):
-            not_valid = numpy.logical_or(mask, hard_target_mask)
-            is_valid = window*numpy.logical_not(not_valid).astype(float)
-            tmp_scan = scan*is_valid
-            tmp_fft = numpy.fft.fft2(tmp_scan - tmp_scan.mean())
-            tmp_res = numpy.real(numpy.fft.ifft2(tmp_fft*numpy.conj(tmp_fft)))
-            res += numpy.fft.fftshift(tmp_res)
-        ### as isotropic spectrum
-        for j, k in enumerate(rindices.flat):
-            if k>0 and k<rbins.size:
-                iso_spectrum[k-1] += res.flat[j]
-                iso_count[k-1] += 1.
-        # normalize, smooth, compute derivatives
-        iso_spectrum /= iso_count
-        iso_spectrum /= iso_spectrum.max()
-        iso_spectrum = ndimage.uniform_filter1d(iso_spectrum, 3, mode='nearest')
-        deriv1_iso_spectrum = numpy.gradient(iso_spectrum, dr)
-        deriv2_iso_spectrum = numpy.gradient(deriv1_iso_spectrum, dr)
-        # first strategy: find 1st derivative crossing zero with negative 2nd-order derivative
-        peak_found = False
-        for i_r, isp in enumerate(iso_spectrum[1:-1],1):
-            if (deriv1_iso_spectrum[i_r]>=.0 and deriv1_iso_spectrum[i_r+1]<=0.):
-                peak_found = True
-                break
-        # second strategy: take the smallest one with a negative second derivative
-        if not peak_found:
-            isort = numpy.argsort(numpy.abs(deriv1_iso_spectrum))
-            for i_r in isort:
-                if deriv2_iso_spectrum[i_r]<0:
-                    peak_found = True
-                    break
-        # we say that the radius is the middle of the bin...
-        peak_radius = rvalues[i_r]
-        ### as directional spectrum
-        if peak_found:
-            rmin = 3.*resolution
-            rmax = peak_radius
-        else:
-            rmin = 3.*resolution
-            rmax = max_wavelength
-        for j, k in enumerate(dindices.flat):
-            r = ranges.flat[j]
-            if k>0 and k<dbins.size and r>=rmin and r<=rmax:
-                dir_spectrum[k-1] += res.flat[j]
-                dir_count[k-1] += 1.
-        # normalize, smooth
-        dir_spectrum /= dir_count
-        dir_spectrum /= dir_spectrum.max()
-        dir_spectrum = ndimage.uniform_filter1d(dir_spectrum, 3, mode='wrap')
-        # find max, take 9-point window centered on it
-        i_d = numpy.argmax(dir_spectrum)
-        i_win = range(i_d-4, i_d+5)
-        d_win = dvalues[i_win]
-        # fix directions if crossing 180-0 degree
-        if d_win[0]>d_win[-1]:
-            i0 = 0
-            while d_win[i0]<d_win[i0+1]:
-                i0 += 1
-            d_win[:i0+1] -= 180.
-        # fit 2nd-order polynomial over 9 points (40 deg)
-        p = numpy.polyfit(d_win, dir_spectrum[i_win], 2)
-        crest_dir = (-p[1]/(2.*p[0]) + 180.)%180.
-        propag_dir = (crest_dir + 90.)%180.
-        ### plot
-        fig, axes_spec = pyplot.subplots(2,1,
-                                         gridspec_kw={'left':.55, 'right':.9, 'bottom':.1,'top':.95,
-                                                      'hspace':.5})
-        # auto-correlation
-        ax_corr = fig.add_axes([.1, .1, .35, .9])
-        ax_corr.set_title('mean auto-correlation')
-        p = ax_corr.imshow(res, interpolation='nearest', origin='bottom', extent=[-sx, sx, -sy, sy])
-        ax_corr.set_xlim(-max_wavelength, max_wavelength)
-        ax_corr.set_ylim(-max_wavelength, max_wavelength)
-        # isotropic spectrum
-        ax = axes_spec[0]
-        ax.set_xlim(0., max_wavelength)
-        #ax.set_ylim(-0.1, 1.)
-        ax.set_xlabel('length (m)')
-        ax.plot(rvalues, iso_spectrum)
-        ax = ax.twinx()
-        ax.plot(rvalues, deriv1_iso_spectrum, color='r')
-        ax.axhline(0, ls='--', color='r', lw=0.5)
-        if peak_found:
-            ax.axvline(peak_radius, ls='--', color='k' ,lw=0.5)
-            print('peak at {} m, {:.0f} deg'.format(peak_radius, propag_dir))
-            ax.text(peak_radius, 1.01, 'peak: {:.0f} m'.format(peak_radius), ha='center', va='bottom',
-                    transform=ax.get_xaxis_transform())
-            # plot on autocorr
-            ax_corr.add_artist(patches.Circle((0., 0.), radius=peak_radius, ls='--',
-                                              fc='none', ec='w', lw=0.75))
-        # directional spectrum
-        ax = axes_spec[1]
-        ax.set_xlim(0., 180.)
-        ax.set_ylim(-0.1, 1.)
-        ax.set_xlabel('direction (deg)')
-        ax.plot(dvalues, dir_spectrum)
-        ax.axvline(crest_dir, ls='--', color='k', lw=0.5)
-        ax.text(crest_dir, 1.01, 'crest: {:.0f} deg'.format(crest_dir), ha='center', va='bottom',
-                transform=ax.get_xaxis_transform())
-        # plot on autocorr
-        if propag_dir>0.:
-            slope = 1./numpy.tan(numpy.deg2rad(propag_dir))
-            x0 = -max_wavelength
-            y0 = slope*x0
-            x1 = max_wavelength
-            y1 = slope*x1
-        else:
-            x0 = 0.
-            y0 = -max_wavelength
-            x1 = 0.
-            y1 = max_wavelength
-        ax_corr.plot([x0, x1], [y0, y1], color='w', ls='--', lw=0.5) #propagation direction
-        ax_corr.plot([-y0, -y1], [x0, x1], color='k', ls='--', lw=0.5) #crest direction
-        # labels
-        pyplot.figtext(0.025, 0.2,
-                       'Case {:02d}\nwavelength = {:.0f} m\npropagation direction = {:.0f} ({:.0f}) deg'.format(
-                           case.case_id, peak_radius, propag_dir, propag_dir+180.),
-                       ha='left', va='top', size='medium', color='k')
-        pyplot.savefig('../tmp/autocorr_{:02d}.png'.format(case.case_id))
-
-    def test_wave_outliers(case):
-        """Test detection and fixing of outliers in wave parameters.
-
-        Written by P. DERIAN 2018-02-08.
-        """
-        def fix_outliers(waves, default_wave, interp_kind='linear'):
-            """Detect and fix outliers in the sequence of waves parameters.
-
-            :return: wavelengths, directions, is_fixed
-
-            Written by P. DERIAN 2018-02-08.
-            """
-            def find_ouliers_MAD(z, coeff=3., size=5):
-                """Detect outliers based on MAD (median of absolute deviations).
-
-                :param z: the sequence;
-                :param coeff: the tolerance coefficient;
-                :param size: the size of the median filter;
-                :return: is_outlier (True where flagged as outlier)
-
-                Written by P. DERIAN 2018-02-08.
-                """
-                #median_z = ndimage.median_filter(z, size=size)
-                median_z = numpy.median(z)
-                abs_res = numpy.abs(z - median_z)
-                #median_abs_res = ndimage.median_filter(abs_res, size=size)
-                median_abs_res = numpy.median(abs_res)
-                return abs_res>coeff*median_abs_res
-            ### extract data, fill missing
-            directions = numpy.array([wave['propagation_direction'] if (wave is not None)
-                                     else numpy.nan for wave in waves])
-            wavelengths = numpy.array([wave['wavelength'] if (wave is not None)
-                                       else numpy.nan for wave in waves])
-            directions[numpy.isnan(directions)] = default_wave['propagation_direction']
-            wavelengths[numpy.isnan(wavelengths)] = default_wave['wavelength']
-            ### transform wavelength, direction => coordinates
-            directions_rad = numpy.deg2rad(directions)
-            x = wavelengths*numpy.sin(directions_rad)
-            y = wavelengths*numpy.cos(directions_rad)
-            ### test each coordinate, combine
-            test_x = find_ouliers_MAD(x)
-            test_y = find_ouliers_MAD(y)
-            is_bad = numpy.logical_or(test_x, test_y)
-            is_valid = numpy.logical_not(is_bad)
-            ### interpolate where outliers
-            idx = numpy.arange(len(is_bad))
-            interp = interpolate.interp1d(idx[is_valid], x[is_valid], kind=interp_kind,
-                                          fill_value='extrapolate')
-            xi = interp(idx)
-            interp = interpolate.interp1d(idx[is_valid], y[is_valid], kind=interp_kind,
-                                          fill_value='extrapolate')
-            yi = interp(idx)
-            wavelengths = numpy.sqrt(xi**2 + yi**2)
-            directions = numpy.rad2deg(numpy.arctan2(xi, yi))
-            directions[directions<0] += 180.
-            return wavelengths, directions, is_bad
-
-        print(case)
-        ### find wave parameters
-        # note: last wave is the mean
-        waves = case.wave_parameters()
-        ### fix
-        wavelengths_fixed, directions_fixed, is_fixed = fix_outliers(waves[:-1], waves[-1])
-        ### display
-        # extract estimated wavelength, directions (excluding mean wave)
-        wavelengths_estimated = numpy.array([wave['wavelength'] if (wave is not None)
-                                            else numpy.nan for wave in waves[:-1]])
-        directions_estimated = numpy.array([wave['propagation_direction'] if (wave is not None)
-                                           else numpy.nan for wave in waves[:-1]])
-        idx = numpy.arange(len(waves)-1)
-        fig, axes = pyplot.subplots(1,2)
-        axes[0].plot(idx, directions_estimated, '+-')
-        axes[0].plot(idx[is_fixed], directions_estimated[is_fixed], '*r')
-        axes[0].plot(idx, directions_fixed, 'o--k', markerfacecolor='none')
-        axes[0].set_ylim(0., 180.)
-        axes[1].plot(idx, wavelengths_estimated, '+-')
-        axes[1].plot(idx[is_fixed], wavelengths_estimated[is_fixed], '*r')
-        axes[1].plot(idx, wavelengths_fixed, 'o--k', markerfacecolor='none')
-        axes[1].set_ylim(10., 120.)
-        fig.savefig('../tmp/fixwave_case_{:02d}.png'.format(case.case_id))
-        pyplot.close(fig)
-
-    def test_detect_crest(case):
-        """
-        Written by P. DERIAN 2018-02-07.
-        """
-        print(case)
-        ### output directory for crests
-        output_dir = os.path.join('..', 'tmp', 'crests', 'case_{:02d}'.format(case.case_id))
-        if not os.path.isdir(output_dir):
-            os.makedirs(output_dir, mode=0o755)
-            print('Created output directory: {}'.format(output_dir))
-        ### Detect wave parameters
-        waves = case.wave_parameters()
-        wavelengths_fixed, directions_fixed, _ = case.fix_wave_outliers(waves[:-1], waves[-1])
-        ### scans
-        resolution = case.param_grid['resolution']
-        hard_target_mask = case.hard_target_mask()
-        for (scan_info, scan_data, scan_valid, grid_scan, grid_mask,
-             wavelength, propagation_direction) in zip(case.scan_info, case.scan_data,
-                                                       case.scan_valid, case.grid_scans,
-                                                       case.grid_masks, wavelengths_fixed,
-                                                       directions_fixed):
-            ### synthetic wave pattern
-            n = numpy.int(numpy.ceil(wavelength/resolution))
-            if not n%2:
-                n += 1
-            x = resolution*(numpy.arange(n) - float(n//2))
-            x, y = numpy.meshgrid(x, x)
-            theta = numpy.deg2rad(propagation_direction)
-            wave_pattern = numpy.cos( (x*numpy.sin(theta) + y*numpy.cos(theta))*(2.*numpy.pi/wavelength) )
-            # normalize for correlation computation
-            tmp_pattern =  (wave_pattern - wave_pattern.mean())/wave_pattern.std()
-            ### scan
-            # compute full mask, apply
-            full_mask = numpy.logical_or(grid_mask, hard_target_mask)
-            full_window = numpy.logical_not(full_mask).astype(float)
-            # normalize for correlation computation
-            tmp_scan = numpy.ma.array(grid_scan*full_window, mask=full_mask)
-            tmp_mean = tmp_scan.mean()
-            tmp_std = tmp_scan.std()
-            tmp_scan = tmp_scan - tmp_scan.mean()/tmp_scan.std()
-            ### correlate (in spatial domain)
-            corr = ndimage.correlate(tmp_scan, tmp_pattern, mode='constant', cval=0.)/float(tmp_pattern.size)
-            corr *= full_window
-            ### find crests
-            # dilate the hard-target mask to minimize artifacts
-            dilation_kernel = morphology.disk(3, dtype=bool)
-            dilated_hard_target_mask = morphology.binary_dilation(hard_target_mask,
-                                                                  dilation_kernel)
-            # by skeletonization
-            is_crest = numpy.logical_and(morphology.skeletonize_3d(corr>0.05),
-                                         numpy.logical_not(dilated_hard_target_mask))
-            not_crest = numpy.logical_not(is_crest)
-            ### plot
-            dpi = 72
-            fig, axes = pyplot.subplots(1,2,
-                                        gridspec_kw={'left':0.09, 'right':0.97, 'wspace':0.25},
-                                        figsize=(768./dpi, 480./dpi))
-            # scan
-            ax = axes[0]
-            ax.set_title('Gridded scan, wave pattern, crests')
-            p1 = ax.imshow(numpy.ma.array(grid_scan, mask=full_mask), interpolation='nearest',
-                           vmin=-1., vmax=3., cmap='nipy_spectral',
-                           origin='bottom', extent=[case.x[0], case.x[-1], case.y[0], case.y[-1]],
-                           zorder=1)
-            # crests?
-            p3 = ax.imshow(numpy.ma.array(is_crest, mask=not_crest), interpolation='nearest',
-                           vmin=0., vmax=1., cmap='gray_r',
-                           origin='bottom', extent=[case.x[0], case.x[-1], case.y[0], case.y[-1]],
-                           zorder=3)
-            # synthetic wave in the bottom-left corner
-            pdim = n*resolution
-            xmin = case.x[0] + 5.
-            xmax = case.x[0] + 5. + pdim
-            ymin = case.y[0] + 5.
-            ymax = case.y[0] + 5. + pdim
-            ax.add_artist(patches.Rectangle((xmin-5., ymin-5.), pdim+10., pdim+10.,
-                                            ec='none', fc='w', zorder=2)) #white background
-            p2 = ax.imshow(wave_pattern, interpolation='nearest',
-                           vmin=-1., vmax=3., cmap='nipy_spectral',
-                           origin='bottom', extent=[xmin, xmax, ymin, ymax],
-                           zorder=3) #patch
-            ax.add_artist(patches.Rectangle((xmin, ymin), pdim, pdim,
-                                            ec='k', fc='none', lw=1., zorder=4)) #black line
-            # correlation
-            ax = axes[1]
-            ax.set_title('Correlation')
-            p = ax.imshow(numpy.ma.array(corr, mask=full_mask), interpolation='nearest',
-                          vmin = -1., vmax=1., cmap='RdYlBu_r',
-                          origin='bottom', extent=[case.x[0], case.x[-1], case.y[0], case.y[-1]])
-            # style
-            scan_str = 'Canopy wave case #{:02d} - {:%Y %b %d - %H:%M:%S} UTC'.format(
-                case.case_id, scan_data['time'][0])
-            wave_str = 'wavelength={:.0f} m, propagation direction={:.0f} ({:.0f}) deg'.format(
-                wavelength, propagation_direction, propagation_direction+180.)
-            pyplot.figtext(0.5, 0.98, '{}\n{}'.format(scan_str, wave_str),
-                           ha='center', va='top', size='large')
-            for ax in axes:
-                ax.set_xlim(xmin=case.x[0], xmax=case.x[-1])
-                ax.set_ylim(ymin=case.y[0], ymax=case.y[-1])
-                ax.set_xlabel('x (m)')
-                ax.set_ylabel('y (m)')
-            basename, _ = os.path.splitext(os.path.basename(scan_info['path']))
-            output_file = os.path.join(output_dir, 'crests_{}.png'.format(basename))
-            fig.savefig(output_file, format='png', dpi=dpi)
-            print('saved {}'.format(output_file))
-            pyplot.close(fig)
-
     def test_crest_motion(case):
         """
         Written by P. DERIAN 2018-02-13.
@@ -1856,7 +1338,7 @@ if __name__=="__main__":
             os.makedirs(output_dir, mode=0o755)
             print('Created output directory: {}'.format(output_dir))
         ### detect crest locations
-        crest_results = case.crest_locations2()
+        crest_results = case.crest_locations()
         ### now for each scan
         hard_target_mask = case.hard_target_mask()
         for idx_scan in range(len(case.grid_scans) - 1):
@@ -1974,96 +1456,6 @@ if __name__=="__main__":
             print('saved {}'.format(output_file))
             pyplot.close(fig)
 
-    def test_classify_wave(case):
-        """
-        Written by P. DERIAN 2018-02-20.
-        """
-        print(case)
-        ### output directory for crests
-        output_dir = os.path.join('..', 'tmp', 'classify', 'case_{:02d}'.format(case.case_id))
-        if not os.path.isdir(output_dir):
-            os.makedirs(output_dir, mode=0o755)
-            print('Created output directory: {}'.format(output_dir))
-        ### Detect wave parameters
-        waves, mean_wave = case.wave_parameters()
-        wavelengths_fixed, directions_fixed, _ = case.fix_wave_outliers(waves, mean_wave)
-        ### scans
-        resolution = case.param_grid['resolution']
-        hard_target_mask = case.hard_target_mask()
-        for (scan_info, scan_data, scan_valid, grid_scan, grid_mask,
-             wavelength, propagation_direction) in zip(case.scan_info, case.scan_data,
-                                                       case.scan_valid, case.grid_scans,
-                                                       case.grid_masks, wavelengths_fixed,
-                                                       directions_fixed):
-            ### synthetic wave pattern
-            n = numpy.int(numpy.ceil(wavelength/resolution))
-            if not n%2:
-                n += 1
-            x = resolution*(numpy.arange(n) - float(n//2))
-            x, y = numpy.meshgrid(x, x)
-            theta = numpy.deg2rad(propagation_direction)
-            wave_pattern = numpy.cos( (x*numpy.sin(theta) + y*numpy.cos(theta))*(2.*numpy.pi/wavelength) )
-            sin_pattern = numpy.sin( (x*numpy.sin(theta) + y*numpy.cos(theta))*(2.*numpy.pi/wavelength) )
-            wbreaking_pattern = wave_pattern.copy()
-            wbreaking_pattern[sin_pattern>0.] =  -1.
-            ebreaking_pattern = wave_pattern.copy()
-            ebreaking_pattern[sin_pattern<0.] =  -1.
-            ### scan
-            # compute full mask, apply
-            full_scan_mask = numpy.logical_or(grid_mask, hard_target_mask)
-            full_scan_window = numpy.logical_not(full_scan_mask).astype(float)
-            ### correlate (in spatial domain)
-            correl_wave = ndimage.correlate(grid_scan*full_scan_window, wave_pattern,
-                                            mode='constant', cval=0.)
-            correl_wave *= 2./float(wave_pattern.size) #normalize
-            correl_ebreaking = ndimage.correlate(grid_scan*full_scan_window, ebreaking_pattern,
-                                                 mode='constant', cval=0.)
-            correl_ebreaking *= 2./float(ebreaking_pattern.size) #normalize
-            correl_wbreaking = ndimage.correlate(grid_scan*full_scan_window, wbreaking_pattern,
-                                                 mode='constant', cval=0.)
-            correl_wbreaking *= 2./float(wbreaking_pattern.size) #normalize
-            ### plot
-            dpi = 72
-            fig, axes = pyplot.subplots(2,3,
-                                        gridspec_kw={'left':0.09, 'right':0.97, 'wspace':0.25},
-                                        figsize=(768./dpi, 480./dpi))
-            for i, (pattern, correl, label) in enumerate(zip([wave_pattern, ebreaking_pattern,
-                                                              wbreaking_pattern],
-                                                             [correl_wave, correl_ebreaking,
-                                                              correl_wbreaking],
-                                                             ['Sine wave', 'Breaking E',
-                                                              'Breaking W'])):
-
-                tmp_correl = correl*full_scan_window
-                # pattern
-                ax = axes[0,i]
-                ax.set_title('{}: {:.2f}'.format(label, numpy.sum(tmp_correl[tmp_correl>=0.1])))
-                p2 = ax.imshow(pattern, interpolation='nearest',
-                               vmin=-1., vmax=3., cmap='nipy_spectral',
-                               origin='bottom', extent=[x[0,0], x[0,-1], y[0,0], y[-1,0]])
-                # correlation
-                ax = axes[1,i]
-                p = ax.imshow(correl, interpolation='nearest',
-                              vmin = -1., vmax=1., cmap='RdYlBu_r',
-                              origin='bottom', extent=[case.x[0], case.x[-1], case.y[0], case.y[-1]])
-                # style
-                scan_str = 'Canopy wave case #{:02d} - {:%Y %b %d - %H:%M:%S} UTC'.format(
-                    case.case_id, scan_data['time'][0])
-                wave_str = 'wavelength={:.0f} m, propagation direction={:.0f} ({:.0f}) deg'.format(
-                    wavelength, propagation_direction, propagation_direction+180.)
-                pyplot.figtext(0.5, 0.98, '{}\n{}'.format(scan_str, wave_str),
-                               ha='center', va='top', size='large')
-            for ax in axes.ravel():
-                #ax.set_xlim(xmin=case.x[0], xmax=case.x[-1])
-                #ax.set_ylim(ymin=case.y[0], ymax=case.y[-1])
-                ax.set_xlabel('x (m)')
-                ax.set_ylabel('y (m)')
-            basename, _ = os.path.splitext(os.path.basename(scan_info['path']))
-            output_file = os.path.join(output_dir, 'classify_{}.png'.format(basename))
-            fig.savefig(output_file, format='png', dpi=dpi)
-            print('saved {}'.format(output_file))
-            pyplot.close(fig)
-
     ###
     def main():
         ### Misc plots
@@ -2078,19 +1470,14 @@ if __name__=="__main__":
         cases.update(special_cases)
         set1 = [7, 11, 12, 121, 36, 37, 40]
         set2 = [2, 5, 6, 38, 51,121]
-        for k in [36,]:#set1+set2:
+        for k in [121,]:#set1+set2:
             case = cases[k]
             case.load_scan_data()
             #export_products(case)
             #plot_case_scans(case)
-            #plot_case_waves(case)
+            plot_case_waves(case)
             #plot_case_fixedwaves(case)
-            #plot_case_crests2(case)
+            #plot_case_crests(case)
             #make_movies(case)
-            #test_hard_target_mask(case)
-            #test_wave_parameters_spatial(case)
-            #test_wave_outliers(case)
-            #test_detect_crest(case)
             test_crest_motion(case)
-            #test_classify_wave(case)
     main()
