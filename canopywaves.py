@@ -7,25 +7,37 @@ and acess to the scan database.
 
 Written by P. DERIAN 2018-01-02 |contact@pierrederian.net | www.pierrederian.net
 """
-### STL
+
+### Standard
 import collections
 import datetime
 import os
 import sys
-### External
+
+### Third-party
 import numpy
-import pycuda.driver as cuda
+import scipy.interpolate as interpolate
+import scipy.ndimage as ndimage
 import scipy.signal as signal
 import skimage.filters as filters
 import skimage.feature as feature
 import skimage.measure as measure
 import skimage.morphology as morphology
+# CUDA stuff
+try:
+    import pycuda.driver as cuda
+except ImportError:
+    cuda = None
+
 ### Custom
 # Dirty hack to make sure we're not loading SAMPLE's modules
-sys.path.insert(0,'/home/pderian/Code/Python/Toolbox')
+sys.path.insert(0,'/home/jovyan/work/Toolbox')
+import lidarIO.bscan as bscan
 import lidarRunTime.sqltools as sqltools
-import PyCudaTools.CuMedianFilter.CuMedianFilter as cuMedianFilter
-###
+# CUDA-accelerated stuff, if available
+if cuda:
+    import PyCudaTools.CuMedianFilter.CuMedianFilter as cuMedianFilter
+
 
 class CanopyWaveCase:
     """Represents a single case (event) of canopy wave.
@@ -37,14 +49,14 @@ class CanopyWaveCase:
     """
     ### Constants
 
-    # path to the CSV file describing the different wave events
+    # Path to the CSV file describing the different wave events
     WAVECASES_CSV_PATH = os.path.join(os.path.dirname(os.path.realpath(__file__)),
                                       'resources/Fifty_three_wave_cases.csv')
-    # region of interest (RoI) and grid parameters
+    # Region of interest (RoI) and grid parameters
     # - (x0, y0) are the coordinates of the center of the RoI.
     # - (xdim , ydim) are the dimensions of the RoI.
     # - resolution is the cartesian grid resolution.
-    # note: the true xdim, ydim can be in practice slightly different from values specified
+    # Note: the true xdim, ydim can be in practice slightly different from values specified
     # here (+/- resolution), as we want and odd number of points in each dimension.
     WAVECASES_GRID = {
         # default values: 1 km x 1km RoI centered on the met tower.
@@ -104,7 +116,7 @@ class CanopyWaveCase:
              'resolution': 2., #[m/pixel];
              },
     }
-    # altitude of the anemometer used in each case.
+    # Altitude of the anemometer used in each case.
     # source: big spreadsheet from Shane (Spreadsheet_01_22_18.xls)
     WAVECASES_ANEMOMETER_ALTITUDE = {
         'default': 18., #[m]
@@ -119,7 +131,7 @@ class CanopyWaveCase:
         40: 12.5,
         41: 12.5,
         }
-    # names, values of wave types
+    # Names, values of wave types
     # 'asym' stands for asymmetric, and the suffix is the propagation direction;
     # 'sym' means symmetric (sinusoidal).
     WAVETYPE_NAMES = {'asym_east':1, 'asym_west':-1, 'sym':0}
@@ -127,34 +139,37 @@ class CanopyWaveCase:
 
     ### High-level functions
 
-    def __init__(self, case_id, datetime_start, datetime_stop):
+    def __init__(self, case_id, datetime_start, datetime_stop, bscan_files=None):
         """Case constructor.
 
         :param case_id: the case id,
         :param datetime_start:
         :param datetime_stop:
+        :param bscan_files:
 
         Written by P. DERIAN 2018-01-02.
         Updated by P. DERIAN 2018-02-21: grid have odd number of points in each dimension.
+        Updated by P. DERIAN 2019-08-11: a list of bscan files can be provided when MySQL
+            DB is not available.
         """
-        ### case parameters (e.g. from the CSV file)
+        ### Case parameters (e.g. from the CSV file)
         self.case_id = case_id
         self.datetime_start = datetime_start
         self.datetime_stop = datetime_stop
 
-        ### the RoI and cartesian grid
-        # parameters
+        ### The RoI and cartesian grid
+        # Parameters
         self.param_grid = self.WAVECASES_GRID[self.case_id if (self.case_id in self.WAVECASES_GRID)
                                               else 'default']
-        # grid lower bounds
+        # Grid lower bounds
         self.param_grid['xmin'] = self.param_grid['x0'] - self.param_grid['xdim']/2
         self.param_grid['ymin'] = self.param_grid['y0'] - self.param_grid['ydim']/2
-        # number of points (=> odd)
+        # Number of points (=> odd)
         nx = int(numpy.ceil(self.param_grid['xdim']/self.param_grid['resolution']))
         if not nx%2: nx += 1
         ny = int(numpy.ceil(self.param_grid['ydim']/self.param_grid['resolution']))
         if not ny%2: ny += 1
-        # grid upper bounds (note: mostly used for plotting?)
+        # Grid upper bounds (note: mostly used for plotting?)
         self.param_grid['xmax'] = self.param_grid['xmin'] + float(nx)*self.param_grid['resolution']
         self.param_grid['ymax'] = self.param_grid['ymin'] + float(ny)*self.param_grid['resolution']
         # 1d coordinate values
@@ -169,18 +184,26 @@ class CanopyWaveCase:
         self.grid_yx = numpy.concatenate((self.grid_y.reshape((-1,1)),
                                           self.grid_x.reshape((-1,1))), axis=1) #for interpolation
 
-        ### scan information from the database
-        self.scan_info = sqltools.get_scan_sequence_info(self.datetime_start,
-                                                         self.datetime_stop,
-                                                         scanType='PPI', fullPath=True,
-                                                         allInfo=False)
-        ### scan data
+        # Scan files
+        if bscan_files is None:
+            # Retrieve scan information from the database
+            scan_info = sqltools.get_scan_sequence_info(
+                self.datetime_start,
+                self.datetime_stop,
+                scanType='PPI',
+                fullPath=True,
+                allInfo=False,
+                )
+            bscan_files = [s['path'] for s in scan_info]
+        self.bscan_files = bscan_files
+
+        ### Scan data
         self.scan_data = []
         self.scan_valid = []
         self.grid_scans = []
         self.grid_masks = []
         self.grid_global_mask = None
-        ### products
+        ### Products
         self.products = {}
 
     def __str__(self):
@@ -192,7 +215,7 @@ class CanopyWaveCase:
         """
         name_str = '{} #{}'.format(self.__class__.__name__, self.case_id)
         data_str = '{:%Y-%m-%d %H:%M:%S} - {:%Y-%m-%d %H:%M:%S} UTC ({} scans)'.format(
-            self.datetime_start, self.datetime_stop, len(self.scan_info))
+            self.datetime_start, self.datetime_stop, len(self.bscan_files))
         grid_str = '[{xmin}, {xmax}]x[{ymin}, {ymax}] m^2 ({nx}x{ny} pixel^2 @ {resolution} m/pixel)'.format(
             nx=self.grid_shape[1], ny=self.grid_shape[0], **self.param_grid)
         return '{}\n\tdata: {}\n\tgrid: {}'.format(name_str, data_str, grid_str)
@@ -216,7 +239,7 @@ class CanopyWaveCase:
         self.grid_masks = []
         self.grid_global_mask = None
         ### Setup CUDA
-        if cuda_context is None:
+        if cuda and (cuda_context is None):
             print('Initializing CUDA')
             cuda.init()
             cuda_device  = cuda.Device(device_id)
@@ -226,16 +249,25 @@ class CanopyWaveCase:
             own_context = False
         try: #we use try block to catch exception and allow cuda to close properly
             ### setup filters
-            lp_median = cuMedianFilter.CuMedianFilter(7)
-            hp_median = cuMedianFilter.CuMedianFilter(333, high_pass=True)
+            lp_median = 7
+            hp_median = 333
+            if cuda:
+                lp_median = cuMedianFilter.CuMedianFilter(lp_median)
+                hp_median = cuMedianFilter.CuMedianFilter(hp_median, high_pass=True)
             ### now for each scan
             bad_scan_indices = []
-            for n, tmp_info in enumerate(self.scan_info):
+            for n, file in enumerate(self.bscan_files):
                 # read scan data
-                tmp_data = bscan.readPreprocScan(tmp_info['path'],
-                                                 hpMedianFilter=hp_median, lpMedianFilter=lp_median,
-                                                 removeHardTarget=False, verbose=True, decimate=0,
-                                                 withSNR=False, withImgSNR=False)
+                tmp_data = bscan.readPreprocScan(
+                    file,
+                    hpMedianFilter=hp_median,
+                    lpMedianFilter=lp_median,
+                    removeHardTarget=False,
+                    verbose=True,
+                    decimate=0,
+                    withSNR=False,
+                    withImgSNR=False,
+                    )
                 # interpolate
                 tmp_scan = self.interpolate(tmp_data['x'], tmp_data['y'], tmp_data['scan'])
                 tmp_mask = self.domain_mask(tmp_data['azimuth'], tmp_data['range'])
@@ -261,7 +293,7 @@ class CanopyWaveCase:
             pass
         ### detach CUDA before leaving
         # but only if it was created here
-        if own_context:
+        if cuda and own_context:
             cuda_context.detach()
 
     ### Products
@@ -631,7 +663,7 @@ class CanopyWaveCase:
         return numpy.logical_not(inside_domain)
 
     @classmethod
-    def generate_standard_cases(self, csv_path=WAVECASES_CSV_PATH):
+    def generate_standard_cases_from_csv(self, csv_path=WAVECASES_CSV_PATH):
         """Generate instances for the various standard wave cases.
 
         :param csv_path: path to the csv file listing the variosu cases;
@@ -816,10 +848,6 @@ if __name__=="__main__":
     matplotlib.use('Agg')
     import matplotlib.patches as patches
     import matplotlib.pyplot as pyplot
-    import scipy.ndimage as ndimage
-    import scipy.interpolate as interpolate
-    ###
-    import lidarIO.bscan as bscan
     ###
     OUTPUT_ROOT = '/bulk_storage/pderian_workspace/CanopyWaves/output'
     ###
@@ -1463,8 +1491,8 @@ if __name__=="__main__":
         ### Main processing
         standard_cases = CanopyWaveCase.generate_standard_cases()
         special_cases = {121: CanopyWaveCase(121,
-                                             datetime.datetime(2007, 04, 24, 13, 17, 25),
-                                             datetime.datetime(2007, 04, 24, 13, 18, 40))
+                                             datetime.datetime(2007, 4, 24, 13, 17, 25),
+                                             datetime.datetime(2007, 4, 24, 13, 18, 40))
                          }
         cases = standard_cases
         cases.update(special_cases)
@@ -1475,7 +1503,7 @@ if __name__=="__main__":
             case.load_scan_data()
             #export_products(case)
             #plot_case_scans(case)
-            plot_case_waves(case)
+            #plot_case_waves(case)
             #plot_case_fixedwaves(case)
             #plot_case_crests(case)
             #make_movies(case)
