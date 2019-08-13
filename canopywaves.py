@@ -247,17 +247,18 @@ class CanopyWaveCase:
             own_context = True
         else:
             own_context = False
-        try: #we use try block to catch exception and allow cuda to close properly
-            ### setup filters
-            lp_median = 7
-            hp_median = 333
+        try:  # We use try block to catch exception and allow cuda to close properly
+            ### Setup filters
+            lp_median = 7  # Size in [pixel] of low-pass median filter
+            hp_median = 333  # Size in [pixel] of high-pass median filter
             if cuda:
+                # Enable GPU-accelerated filters when available
                 lp_median = cuMedianFilter.CuMedianFilter(lp_median)
                 hp_median = cuMedianFilter.CuMedianFilter(hp_median, high_pass=True)
-            ### now for each scan
+            ### Now for each scan
             bad_scan_indices = []
             for n, file in enumerate(self.bscan_files):
-                # read scan data
+                # Read scan data
                 tmp_data = bscan.readPreprocScan(
                     file,
                     hpMedianFilter=hp_median,
@@ -268,20 +269,20 @@ class CanopyWaveCase:
                     withSNR=False,
                     withImgSNR=False,
                     )
-                # interpolate
+                # Interpolate on cartesian grid
                 tmp_scan = self.interpolate(tmp_data['x'], tmp_data['y'], tmp_data['scan'])
                 tmp_mask = self.domain_mask(tmp_data['azimuth'], tmp_data['range'])
-                # check the domain, move on to next scan if too little covered
+                # Check the domain, move on to next scan if too little covered
                 tmp_valid = tmp_mask.mean() < (1.-min_domain)
                 if not tmp_valid:
                     print('[!] domain covered by scan is below threshold')
-                # append
+                # Append
                 self.scan_data.append(tmp_data)
                 self.scan_valid.append(tmp_valid)
                 self.grid_scans.append(tmp_scan)
                 self.grid_masks.append(tmp_mask)
-            ### compute the global domain mask
-            # take the stack as an array (only valid scans), sum across scans, cast to bool
+            ### Compute the global domain mask
+            # Take the stack as an array (only valid scans), sum across scans, cast to bool
             self.grid_global_mask = numpy.asarray(self.grid_masks)[self.scan_valid].sum(axis=0).astype(bool)
         ### If failure, clear and pass
         except Exception as e:
@@ -291,8 +292,8 @@ class CanopyWaveCase:
             self.grid_scans = []
             self.grid_masks = []
             pass
-        ### detach CUDA before leaving
-        # but only if it was created here
+        ### Detach CUDA before leaving
+        # But only if it was created here
         if cuda and own_context:
             cuda_context.detach()
 
@@ -311,16 +312,16 @@ class CanopyWaveCase:
         """
         if 'hard_target_mask' not in self.products:
             print('* (Case #{:02d}) Generating hard-target mask'.format(self.case_id))
-            # compute the max over the stack of (valid) gridded scans
+            # Compute the max over the stack of (valid) gridded scans
             max_scan = numpy.asarray(self.grid_scans)[self.scan_valid].max(axis=0)
-            # set out-of-domain values of max_scan to zero, just in case
+            # Set out-of-domain values of max_scan to zero, just in case
             max_scan *= numpy.logical_not(self.grid_global_mask).astype(float)
-            # threshold
+            # Threshold
             auto_mask = max_scan>threshold
-            # custom mask: manually discrad the tower shadow
+            # Custom mask: manually discard the tower shadow
             custom_mask = numpy.logical_and(self.grid_y<-1610.,
                                             numpy.abs(self.grid_x)<2.*self.param_grid['resolution'])
-            # the combination of both masks
+            # Return the combination of both masks
             self.products['hard_target_mask'] = numpy.logical_or(auto_mask, custom_mask)
         return self.products['hard_target_mask']
 
@@ -333,27 +334,27 @@ class CanopyWaveCase:
         """
         if 'autocorrelations' not in self.products:
             print('* (Case #{:02d}) Computing autocorrelations'.format(self.case_id))
-            ### the displacements (lag)
+            ### The displacements (lag)
             ny, nx = self.grid_shape
             xl = self.param_grid['resolution']*(nx//2)
             yl = self.param_grid['resolution']*(ny//2)
             xlag = numpy.linspace(-xl, xl, nx)
             ylag = numpy.linspace(-yl, yl, ny)
             xlag, ylag = numpy.meshgrid(xlag, ylag)
-            ### the autocorrelations
-            # hard targets
+            ### The autocorrelations
+            # Hard targets
             hard_target_mask = self.hard_target_mask()
-            # tapering window
+            # Tapering window
             window = numpy.outer(signal.hann(ny), signal.hann(nx))
-            # now for each scan
+            # Now for each scan
             autocorrelations = []
             for idx_scan, (scan, mask) in enumerate(zip(self.grid_scans, self.grid_masks)):
-                # full mask (domain + hard targets)
+                # Full mask (domain + hard targets)
                 full_mask = numpy.logical_or(mask, hard_target_mask)
-                # full window (tapering window + mask)
+                # Full window (tapering window + mask)
                 tmp_window = window*numpy.logical_not(full_mask).astype(float)
                 tmp_scan = scan*tmp_window
-                # compute auto-coorrelation in Fourrier domain
+                # Compute auto-coorrelation in Fourrier domain
                 tmp_fft = numpy.fft.fft2(tmp_scan - tmp_scan.mean())
                 tmp_autocorrel = numpy.real(numpy.fft.ifft2(tmp_fft*numpy.conj(tmp_fft)))
                 autocorrelations.append(numpy.fft.fftshift(tmp_autocorrel))
