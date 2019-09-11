@@ -530,11 +530,10 @@ class CanopyWaveCase:
             ### scans
             crest_location_results = []
             resolution = self.param_grid['resolution']
-            for (scan_info, scan_data, scan_valid, grid_scan, grid_mask,
-                 wavelength, propagation_direction) in zip(self.scan_info, self.scan_data,
-                                                           self.scan_valid, self.grid_scans,
-                                                           self.grid_masks, wavelengths_fixed,
-                                                           directions_fixed):
+            for (scan_data, scan_valid, grid_scan, grid_mask,
+                 wavelength, propagation_direction) in zip(self.scan_data, self.scan_valid, 
+                                                           self.grid_scans, self.grid_masks,
+                                                           wavelengths_fixed, directions_fixed):
                 ### scan
                 # compute full mask, apply
                 full_crest_mask = numpy.logical_or(grid_mask, dilated_hard_target_mask)
