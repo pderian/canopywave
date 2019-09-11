@@ -678,10 +678,9 @@ class CanopyWaveCase:
         Written by P. DERIAN 2018-01-02.
         """
         print('* Generating standard cases')
-        ### load data
-        # skip the first row which is the column names.
+        # Load data, skipping the first row which is the column names.
         data = numpy.loadtxt(csv_path, dtype=int, delimiter=',', skiprows=1)
-        ### Header states:
+        # Header states:
         # Year,Month,Day,Hour,Min,Sec,Hour,Min,Sec,Hour,Min,Sec,Hour,Min,Sec
         # so there are 4 times for each episode. From Shane:
         #   "[...] the row number corresponds to the episode number in the infamous canopy waves paper.
@@ -694,14 +693,13 @@ class CanopyWaveCase:
         cases = {}
         for k, (year, month, day, _, _, _, _, _, _, hour_start, min_start, sec_start,
                 hour_stop, min_stop, sec_stop) in enumerate(data, 1):
-            # the UTC datetimes
+            # The UTC datetimes
             datetime_start_UTC = datetime.datetime(year, month, day,
                                                    hour_start, min_start, sec_start)
             datetime_stop_UTC = datetime.datetime(year, month, day,
                                                   hour_stop, min_stop, sec_stop)
-            # now instantiate
+            # Now instantiate
             cases[k] = CanopyWaveCase(k, datetime_start_UTC, datetime_stop_UTC)
-        ### return
         return cases
 
     @classmethod
@@ -780,8 +778,8 @@ class CanopyWaveCase:
         # Note: reverse u, v order to get 0 = North
         # and adding -pi for the direction convention (wind COMES from)
         theta = numpy.arctan2(numpy.atleast_1d(u), numpy.atleast_1d(v)) - numpy.pi
-        theta[ theta<0] += 2.*numpy.pi #so we get only positive values in [0, 2*pi]
-        theta = numpy.rad2deg(theta) #convert to degrees
+        theta[ theta<0] += 2.*numpy.pi  # So we get only positive values in [0, 2*pi]
+        theta = numpy.rad2deg(theta)  # Convert to degrees
         return theta
 
     @staticmethod
@@ -794,8 +792,8 @@ class CanopyWaveCase:
 
         Written by P. DERIAN 2018.02-21.
         """
-        xcut = w/5. #where the change occurs
-        xp = (x + xcut)%w #periodize
+        xcut = w/5.  # Where the change occurs
+        xp = (x + xcut)%w  # Periodize
         part1 = xp<=xcut
         part2 = numpy.logical_not(part1)
         result = numpy.zeros_like(x)
@@ -813,11 +811,11 @@ class CanopyWaveCase:
 
         Written by P. DERIAN 2018.02-21.
         """
-        xcut = w/5. #where the change occurs
-        tau1 = xcut/numpy.pi #decay of the increasing part
-        tau2 = (w - xcut)/numpy.pi #decay of the decreasing part
-        xp = (x + xcut)%w #periodize
-        part1 = xp<=xcut
+        xcut = w/5.  # Where the change occurs
+        tau1 = xcut/numpy.pi  # Decay of the increasing part
+        tau2 = (w - xcut)/numpy.pi  # Decay of the decreasing part
+        xp = (x + xcut)%w  # Periodize
+        part1 = xp <= xcut
         part2 = numpy.logical_not(part1)
         result = numpy.zeros_like(x)
         result[part1] = 1. - 2.*numpy.exp((-1./tau1)*xp[part1])
@@ -836,6 +834,7 @@ class CanopyWaveCase:
         """
         return numpy.cos((2.*numpy.pi/w)*x)
 
+    
 ### MAIN FUNCTIONS ###
 
 if __name__=="__main__":
